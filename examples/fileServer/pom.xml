@@ -2,10 +2,10 @@
 <project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
 
-    <name>Spotify Apollo Example Calculator App</name>
-    <description>A simple calculator application</description>
+    <name>Spotify Apollo Example File Upload Service</name>
+    <description>A simple file server application</description>
     <groupId>com.spotify</groupId>
-    <artifactId>calculator-example-service</artifactId>
+    <artifactId>file-server-example-service</artifactId>
     <version>0.0.1-SNAPSHOT</version>
     <packaging>jar</packaging>
 
@@ -98,7 +98,7 @@
                             <addDefaultSpecificationEntries>true</addDefaultSpecificationEntries>
                             <addClasspath>true</addClasspath>
                             <classpathPrefix>lib/</classpathPrefix>
-                            <mainClass>com.spotify.apollo.example.CalculatorApp</mainClass>
+                            <mainClass>com.spotify.apollo.example.FileServiceApp</mainClass>
                         </manifest>
                     </archive>
                 </configuration>

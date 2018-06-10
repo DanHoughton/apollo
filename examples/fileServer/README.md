@@ -1,18 +1,18 @@
-## A simple calculator
+## A simple file upload service
 
 ### Build
 `mvn package`
 
 ### Run
-`java -jar target/calculator-service.jar`
+`java -jar target/file-service.jar`
 
 ### Call
 ```
-$ http :8080/add t1==28 t2==14
-HTTP/1.1 200 OK
-Content-Length: 2
-Date: Tue, 17 Nov 2015 18:01:32 GMT
-Server: Jetty(9.3.4.v20151007)
+curl --request PUT \
+  --url http://localhost:8080/upload \
+  --header 'content-disposition: form-data; name="uploadField"; filename="myFileName.jpg"' \
+  --header 'content-type: multipart/form-data; boundary=---011000010111000001101001' \
+  --form myFile="/complete/path/to/your/file"
 
-42
+The file has been saved successfully.
 ```
