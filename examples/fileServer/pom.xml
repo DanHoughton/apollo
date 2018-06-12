@@ -5,7 +5,7 @@
     <name>Spotify Apollo Example File Upload Service</name>
     <description>A simple file server application</description>
     <groupId>com.spotify</groupId>
-    <artifactId>file-server-example-service</artifactId>
+    <artifactId>file-service</artifactId>
     <version>0.0.1-SNAPSHOT</version>
     <packaging>jar</packaging>
 
