@@ -10,12 +10,14 @@ import com.spotify.apollo.route.AsyncHandler;
 import com.spotify.apollo.route.Middleware;
 import com.spotify.apollo.route.Route;
 import com.spotify.apollo.route.SyncHandler;
+import org.apache.commons.fileupload.MultipartStream;
 
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.nio.file.StandardOpenOption;
-import java.util.Arrays;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
@@ -26,13 +28,15 @@ import java.util.UUID;
  * It uses a synchronous route to accept and save a file that has been uploaded. It also includes a synchronous
  * middleware that translates uncaught exceptions into error code 500.
  * <p>
- * Try it by using a rest client tool and including a file as the body of a PUT request.
- * Note that this code is not currently reading any additional headers that will state the file type or file name.
+ * Try it by using a rest client tool and including a file as the body of a multipart/form-data POST request.
+ *
+ * The directory to save the files can be defined in the services configuration file.
  */
 final class FileServiceApp {
 
     //The directory we want to save the uploaded files to.
     static String fileSaveDirectory = "./";
+    static final String FILE_UPLOAD_PATH = "server.file.upload.dir";
 
     public static void main(String... args) throws LoadingException {
         HttpService.boot(FileServiceApp::init, "file-service", args);
@@ -45,7 +49,7 @@ final class FileServiceApp {
      */
     static void init(Environment environment) {
         //Get the file save directory from the file-service.conf file that is located in the resources folder.
-        fileSaveDirectory = environment.config().getString("server.file.upload.dir");
+        fileSaveDirectory = environment.config().getString(FILE_UPLOAD_PATH);
 
         //Create our request handler.
         SyncHandler<Response<String>> uploadHandler = context -> upload(context.request());
@@ -53,73 +57,80 @@ final class FileServiceApp {
         //Create our routing engine entry
         environment.routingEngine().registerAutoRoute(
                 Route.with(exceptionHandler(), //Catch thrown runtime exceptions with this handler.
-                        "PUT", //The HTTP method for the endpoint.
+                        "POST", //The HTTP method for the endpoint.
                         "/upload",  //The endpoint path.
                         uploadHandler)); //The actual method handling the upload.
     }
 
     /**
-     * A request handling method meant to handle a file upload. Currently the file is just saved with the provided file
-     * name or we generate a basic file UUID name, this could then be mapped to some kind of data storage tool to be
-     * handled more elegantly.
+     * A request handling method meant to handle a file upload. Will currently handle a multipart/form-data message
+     * following the RFC standard for mutlipart/form-data messages in HTTP. Outlined in RFC2388.
      *
      * @param req The {@link Request} object that has been sent to the server from the client.
      * @return An {@link Response} from the server containing a status code and short description of the action that
-     * has occured as a result of the clients reuqest.
+     * has occurred as a result of the clients request.
      */
     static Response upload(Request req) {
-        //Check that a file was actually uploaded. And get the content disposition if it's present.
+        //Check that a file was actually uploaded.
         if (req.payload().isPresent()) {
-            byte[] payloadBytes = req.payload().get().toByteArray();
-            Optional<String> fileName = Optional.empty(); //Create a UUID for the time being.
-
-            //Check for a content disposition header.
-            Optional<String> contentDispositionString = req.header("content-disposition");
-            if(contentDispositionString.isPresent()) {
-                //Parse the content disposition.
-                //Unfortunately there is no current support for this particular header, so it will need to be
-                //parsed manually.
-                fileName = tokenizableHeader(contentDispositionString.get(), "filename", ";");
-            }
+            Optional<String> fileName = Optional.empty(); //Create an empty optional for the time being.
 
             try {
-                String payloadString = Arrays.toString(payloadBytes);
-                String[] payloadParts = null;
-                Optional<String> boundry = tokenizableHeader(req.header("Content-Type").get(), "boundry", ";");
+                //Get the boundary string.
+                Optional<String> boundary = parseHeader(req.header("Content-Type").get(), "boundary",
+                        Optional.of(";"));
 
-                if(boundry.isPresent()) {
-                    payloadParts = payloadString.split(boundry.get());
-                }
+                //If we have one, this is probably a multipart/form-data message.
+                if (boundary.isPresent()) {
+                    ByteArrayInputStream payloadInputStream = new ByteArrayInputStream(req.payload().get().toByteArray());
+                    MultipartStream payloadStream =
+                            new MultipartStream(payloadInputStream, boundary.orElse("").getBytes());
 
-                //Need to handle all the parts
-                if(payloadParts != null) {
-                    for(int i = 0; i < payloadParts.length; i++) {
-                        String currentPart = payloadParts[i];
-                        currentPart = currentPart.replaceAll(boundry.get(), ""); //Remove the bounds
-                        String partHeader = currentPart.substring(0, currentPart.indexOf("\r\n\r\n"));//grab all text before the first empty line
-                        fileName = tokenizableHeader(partHeader, "filename", ";");;
+                    //Use the stream parser to read the stream
+                    boolean nextPart = payloadStream.skipPreamble(); //Skip the first boundary
+                    while (nextPart) {
+                        String header = payloadStream.readHeaders(); //Read the part form data header.
+                        fileName = parseHeader(header, "filename", Optional.of(";|\n|\r\n"));
+
+                        ByteArrayOutputStream fileBytes = new ByteArrayOutputStream();
+                        payloadStream.readBodyData(fileBytes); //Read the file/form data into the byte stream.
+
+                        saveFile(fileBytes.toByteArray(), fileName);
+
+                        fileBytes.close();
+                        nextPart = payloadStream.readBoundary();
                     }
+
+                    payloadInputStream.close();
                 } else {
-
-
+                    //Just save the body as a file?
+                    byte[] payloadBytes = req.payload().get().toByteArray();
 
                     saveFile(payloadBytes, fileName);
                 }
             } catch (IOException e) {
-                return Response.forStatus(Status.INTERNAL_SERVER_ERROR).withPayload("We failed to save the file," +
-                        " please try again.");
+                return Response.forStatus(Status.INTERNAL_SERVER_ERROR).withPayload("We failed to save the file, please try again.");
             }
+
             return Response.forStatus(Status.CREATED).withPayload("The file has been saved successfully.");
         } else {
             return Response.forStatus(Status.BAD_REQUEST).withPayload("No file data has been included in the request!");
         }
     }
 
+    /**
+     * Save the provided file bytes to disk.
+     *
+     * @param payloadBytes The bytes we are writing to disk.
+     * @param fileName The name of the file we are saving. Will default to a UUID based on the payload bytes if the optional
+     *                 isn't present.
+     * @throws IOException Thrown if the file couldn't be written, if the folder isn't accessible.
+     */
     private static void saveFile(byte[] payloadBytes, Optional<String> fileName) throws IOException {
         Files.write(Paths.get(
                 fileSaveDirectory + fileName.orElse(UUID.nameUUIDFromBytes(payloadBytes).toString())), //The file and directory we are saving to.
                 payloadBytes, //The bytes of the file that was uploaded.
-                StandardOpenOption.CREATE_NEW, StandardOpenOption.CREATE); //The open options.
+                StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.CREATE); //The open options. Essentially create or overwrite.
     }
 
     /**
@@ -143,26 +154,35 @@ final class FileServiceApp {
     }
 
     /**
-     * Parse and retrieve a specific filed from the content disposition header passed into this function.
+     * Parse and retrieve a specific field from the provided multi value header passed into this function.
      *
-     * @param multiValueHeader The content dispotions following the format  outlined in EFC 6266
-     * @param fieldToRetrieve The filed we are trying to retrieve. This is a case insensitive argument.
+     * @param multiValueHeader     A header containing multiple values.
+     * @param fieldToRetrieve      The field we are trying to retrieve. This is a case insensitive argument.
+     * @param delimitingTokenRegex A regular expression containing delimiting token(s) used to split up values in the
+     *                             provided multi value header. (Will default to ';' if provided an empty optional)
      * @return an {@link Optional} containing the value for the provided field name if present. Otherwise the return
      * value will be an {@linkt Optional#empty}
      */
-    static Optional<String> tokenizableHeader(String multiValueHeader, String fieldToRetrieve, String delimitingToken) {
-        Objects.requireNonNull(multiValueHeader, "A Content-Disposition header needs to be supplied to this method.");
-        Objects.requireNonNull(fieldToRetrieve, "A content disposition field name must be supplied to this method.");
+    private static Optional<String> parseHeader(String multiValueHeader, String fieldToRetrieve,
+                                                Optional<String> delimitingTokenRegex) {
+        Objects.requireNonNull(multiValueHeader, "A header must to be supplied to this method.");
+        Objects.requireNonNull(fieldToRetrieve, "A field name must be supplied to this method.");
+
+        String delimitingToken = delimitingTokenRegex.orElse(";");
 
         String[] contentDispositionArray = multiValueHeader.split(delimitingToken);
         String returnString = null; //Default to null.
 
-        for(int i = 0; i < contentDispositionArray.length; i++) {
-            if(contentDispositionArray[i].toLowerCase().contains(fieldToRetrieve)) {
+        for (int i = 0; i < contentDispositionArray.length; i++) {
+            if (contentDispositionArray[i].toLowerCase().contains(fieldToRetrieve)) {
                 returnString = contentDispositionArray[i];
                 //Start after the = sign and opening of the string and chop off the last quotation mark.
+                //Kind of hacky
                 returnString = returnString.substring(returnString.indexOf("="));
-                returnString = returnString.replaceAll("=", "").replaceAll(delimitingToken, "");
+                returnString = returnString
+                        .replaceAll("=", "")
+                        .replaceAll(delimitingToken, "")
+                        .replaceAll("\"", "");
             }
         }
 
